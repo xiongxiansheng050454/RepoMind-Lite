@@ -2,7 +2,7 @@
 
 Java 代码仓库问答 Agent：提交公开 Git 仓库，异步解析 Java AST 并建立向量索引；自然语言提问后，Agent 检索代码、读取文件、查询 Git 历史，通过 SSE 输出回答与文件行号引用。
 
-个人开发的后端 MVP：单体服务、三个工具、单轮问答，不包含账户系统、前端、代码修改、多语言或多 Agent。
+个人开发的全栈 MVP：单体服务、Web 前端、三个工具、单轮问答，不包含账户系统、代码修改、多语言或多 Agent。
 
 ## 技术栈与结构
 
@@ -53,7 +53,17 @@ PowerShell 使用 `Copy-Item .env.example .env`。`.env` 已加入忽略列表�
 
 聊天与 Embedding 共享 API 地址和 Key。服务商需同时支持这些接口和 1536 维向量；更换 Embedding 模型不能复用旧模型向量。MVP 没有重建索引接口。
 
-API 在 `http://localhost:8080`；RabbitMQ 管理在 `http://localhost:15672`（`repomind/repomind`）；就绪检查 `/actuator/health/readiness`；指标 `/actuator/prometheus`。端口仅绑定 localhost，默认密码用于本地演示。
+服务在 `http://localhost:8080`（**Web 界面**和 API）；RabbitMQ 管理在 `http://localhost:15672`（`repomind/repomind`）；就绪检查 `/actuator/health/readiness`；指标 `/actuator/prometheus`。端口仅绑定 localhost，默认密码用于本地演示。
+
+## Web 界面
+
+启动后访问 `http://localhost:8080` 使用 Web 界面：
+- 提交仓库并实时查看索引进度
+- 流式问答交互，自动显示代码引用
+- 深色主题，响应式设计
+- 无需额外配置，开箱即用
+
+详见 [前端使用指南](docs/FRONTEND.md)。
 
 ## API 演示
 
