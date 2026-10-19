@@ -1,0 +1,52 @@
+spring:
+  application:
+    name: repomind-lite
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/repomind}
+    username: ${DATABASE_USERNAME:repomind}
+    password: ${DATABASE_PASSWORD:repomind}
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:repomind}
+    password: ${RABBITMQ_PASSWORD:repomind}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+  flyway:
+    enabled: true
+  jackson:
+    default-property-inclusion: non_null
+
+repomind:
+  llm:
+    base-url: ${LLM_BASE_URL:https://api.openai.com/v1}
+    api-key: ${LLM_API_KEY:}
+    model: ${LLM_MODEL:gpt-4o-mini}
+    embedding-model: ${EMBEDDING_MODEL:text-embedding-3-small}
+    max-tokens: ${LLM_MAX_TOKENS:1024}
+  repositories:
+    work-dir: ${REPOSITORIES_WORK_DIR:/var/lib/repomind/repositories}
+
+server:
+  port: ${PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db,redis,rabbit
+
+logging:
+  level:
+    com.repomind.lite: INFO
+  pattern:
+    console: 'ts=%d{yyyy-MM-dd''T''HH:mm:ss.SSSXXX} level=%level thread=%thread logger=%logger{36} requestId=%X{requestId} repositoryId=%X{repositoryId} jobId=%X{jobId} message="%msg"%n'
