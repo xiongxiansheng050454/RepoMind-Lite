@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RepoMind Lite - 代码仓库智能问答</title>
+    <link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
+                    </svg>
+                    <h1>RepoMind <span>Lite</span></h1>
+                </div>
+                <div class="status-indicator" id="apiStatus">
+                    <span class="status-dot"></span>
+                    <span class="status-text">就绪</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Submit Repository Section -->
+            <section class="section submit-section" id="submitSection">
+                <div class="section-header">
+                    <h2>提交代码仓库</h2>
+                    <p class="section-desc">输入公开 Java Git 仓库 URL，开始构建知识索引</p>
+                </div>
+
+                <form id="submitForm" class="submit-form">
+                    <div class="form-group">
+                        <label for="repoUrl">仓库 URL</label>
+                        <input
+                            type="url"
+                            id="repoUrl"
+                            name="repoUrl"
+                            placeholder="https://github.com/username/repository"
+                            required
+                        />
+                    </div>
+
+                    <div class="form-group">
+                        <label for="ref">分支/标签/Commit <span class="optional">(可选)</span></label>
+                        <input
+                            type="text"
+                            id="ref"
+                            name="ref"
+                            placeholder="main, v1.0.0, 或 commit hash"
+                        />
+                    </div>
+
+                    <button type="submit" class="btn btn-primary" id="submitBtn">
+                        <span class="btn-text">开始索引</span>
+                        <svg class="btn-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M3 8h10m-5-5l5 5-5 5"></path>
+                        </svg>
+                    </button>
+                </form>
+            </section>
+
+            <!-- Repository List Section -->
+            <section class="section" id="repositoriesSection" style="display: none;">
+                <div class="section-header">
+                    <h2>已提交的仓库</h2>
+                </div>
+                <div id="repositoryList" class="repository-list"></div>
+            </section>
+
+            <!-- Chat Section -->
+            <section class="section chat-section" id="chatSection" style="display: none;">
+                <div class="section-header">
+                    <div>
+                        <h2>代码问答</h2>
+                        <p class="section-desc" id="chatRepositoryInfo"></p>
+                    </div>
+                    <button class="btn btn-secondary" id="backBtn">返回</button>
+                </div>
+
+                <!-- Chat Messages -->
+                <div class="chat-messages" id="chatMessages"></div>
+
+                <!-- Chat Input -->
+                <form id="chatForm" class="chat-input-form">
+                    <div class="chat-input-wrapper">
+                        <textarea
+                            id="chatInput"
+                            placeholder="询问关于代码的问题..."
+                            rows="1"
+                            maxlength="2000"
+                        ></textarea>
+                        <button type="submit" class="btn btn-icon" id="sendBtn">
+                            <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                                <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="char-count">
+                        <span id="charCount">0</span> / 2000
+                    </div>
+                </form>
+            </section>
+        </main>
+
+        <!-- Toast Container -->
+        <div id="toastContainer" class="toast-container"></div>
+    </div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>
