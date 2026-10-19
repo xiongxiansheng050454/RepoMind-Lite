@@ -28,6 +28,10 @@ repomind:
     max-tokens: ${LLM_MAX_TOKENS:1024}
   repositories:
     work-dir: ${REPOSITORIES_WORK_DIR:/var/lib/repomind/repositories}
+  security:
+    # SECURITY WARNING: Only set to true in development environments
+    # This disables public IP validation for repository URLs
+    skip-ip-validation: ${SKIP_IP_VALIDATION:true}
 
 server:
   port: ${PORT:8080}
