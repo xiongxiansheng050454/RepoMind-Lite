@@ -53,6 +53,18 @@ PowerShell 使用 `Copy-Item .env.example .env`。`.env` 已加入忽略列表�
 
 聊天与 Embedding 共享 API 地址和 Key。服务商需同时支持这些接口和 1536 维向量；更换 Embedding 模型不能复用旧模型向量。MVP 没有重建索引接口。
 
+模型也可以在 Web 界面右上角的状态按钮（齿轮图标）里配置，保存到数据库的 `app_settings` 表，优先级高于上表的环境变量，无需重启。也可调用 `GET/PUT /api/settings/llm` 和 `POST /api/settings/llm/test`（测试连接，不保存）。注意：
+
+- API Key 以明文存放在数据库，接口只返回掩码；更换接口地址时必须同时重新填写 Key，避免旧 Key 被发往新地址。
+- 设置接口目前没有认证，仅适合本机或受信任网络。
+- 未配置模型时，提交仓库会直接返回 `LLM_NOT_CONFIGURED`，不会入队索引。
+
+索引失败时，`GET /api/repositories/{id}/index-status` 会返回 `errorCode`（如 `GIT_DNS_FAILED`、`GIT_TLS`、`LLM_AUTH`、`LLM_NOT_CONFIGURED`）和 `failedStage`（`CLONING`/`PARSING`/`EMBEDDING`），Web 界面据此在卡片上显示具体原因。`repomind.security.skip-ip-validation=true` 时，域名解析到回环/内网地址（例如加速器把 github.com 指向 127.0.0.1）不会被拒绝。
+
+如果本机直连 GitHub 不通、需要走 HTTP 代理才能访问（卡片报 `GIT_UNREACHABLE`，信息类似 `Connecting to github.com (...:443) failed: Connection timed out`），设置 `GIT_PROXY=http://127.0.0.1:7897`（改成你的代理地址，仅支持 http 代理，不支持带账号密码）。克隆会通过该代理的 CONNECT 隧道进行，TLS 仍然校验 github.com 的证书。注意：应用不会自动读取 `HTTPS_PROXY`；启用后域名由代理解析，本地的内网地址检查对克隆不再生效。模型接口（`LLM_BASE_URL`）的请求不经过这个代理。实测方式：`mvn test -Dtest=PublicGitSmokeTest -Drepomind.live-git=true -Drepomind.git.proxy=http://127.0.0.1:7897`。
+
+不再需要的仓库可以在 Web 界面卡片上点“删除”，或调用 `DELETE /api/repositories/{id}`（成功返回 204，不存在返回 404）。会同时删除索引任务、代码片段、队列记录和本地代码副本；若该仓库正在索引，进行中的任务会被中止，且无法恢复。
+
 服务在 `http://localhost:8080`（**Web 界面**和 API）；RabbitMQ 管理在 `http://localhost:15672`（`repomind/repomind`）；就绪检查 `/actuator/health/readiness`；指标 `/actuator/prometheus`。端口仅绑定 localhost，默认密码用于本地演示。
 
 ## Web 界面

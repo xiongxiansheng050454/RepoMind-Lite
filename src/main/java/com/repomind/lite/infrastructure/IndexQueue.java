@@ -21,7 +21,7 @@ public class IndexQueue {
     }
 
     @Bean
-    Queue indexQueue() {
+    Queue indexQueueBean() {
         return new Queue(QUEUE, true, false, false);
     }
 

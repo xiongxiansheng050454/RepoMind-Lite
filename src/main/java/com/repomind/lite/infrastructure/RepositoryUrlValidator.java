@@ -1,6 +1,8 @@
 package com.repomind.lite.infrastructure;
 
 import com.repomind.lite.errors.BusinessException;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.eclipse.jgit.lib.Repository;
 
@@ -21,13 +23,25 @@ public class RepositoryUrlValidator {
     }
 
     private final Resolver resolver;
+    private final boolean skipIpValidation;
 
-    public RepositoryUrlValidator() {
-        this(InetAddress::getAllByName);
+    @Autowired
+    public RepositoryUrlValidator(DnsResolver dnsResolver,
+                                  @Value("${repomind.security.skip-ip-validation:false}") boolean skipIpValidation) {
+        this(dnsResolver::resolve, skipIpValidation);
     }
 
-    public RepositoryUrlValidator(Resolver resolver) {
+    RepositoryUrlValidator() {
+        this(InetAddress::getAllByName, false);
+    }
+
+    public RepositoryUrlValidator(Resolver resolver, boolean skipIpValidation) {
         this.resolver = resolver;
+        this.skipIpValidation = skipIpValidation;
+    }
+
+    public boolean skipsIpValidation() {
+        return skipIpValidation;
     }
 
     public Remote validate(String value, String requestedRef) {
@@ -40,9 +54,26 @@ public class RepositoryUrlValidator {
             host = host.toLowerCase(Locale.ROOT);
             if (host.equals("localhost") || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal") || !host.contains("."))
                 throw invalid();
-            InetAddress[] addresses = resolver.resolve(host);
-            if (addresses.length == 0) throw invalid();
-            for (InetAddress address : addresses) if (!isPublic(address)) throw invalid();
+            InetAddress[] addresses;
+            try {
+                addresses = resolver.resolve(host);
+            } catch (UnknownHostException ex) {
+                throw new BusinessException(com.repomind.lite.errors.FailureType.BAD_REQUEST, "GIT_DNS_FAILED",
+                        "Unable to resolve hostname: " + host + ". Please check your network connection or DNS settings.");
+            }
+            if (addresses.length == 0)
+                throw new BusinessException(com.repomind.lite.errors.FailureType.BAD_REQUEST, "GIT_DNS_FAILED",
+                        "No IP addresses found for hostname: " + host);
+            if (!skipIpValidation) {
+                for (InetAddress address : addresses) {
+                    if (!isPublic(address)) {
+                        throw new BusinessException(com.repomind.lite.errors.FailureType.BAD_REQUEST, "GIT_HOST_PRIVATE_IP",
+                            "Repository host resolves to a non-public IP address: " + address.getHostAddress() +
+                            ". This is likely due to your hosts file or DNS configuration. " +
+                            "To bypass this check for development, set repomind.security.skip-ip-validation=true");
+                    }
+                }
+            }
             String path = uri.getRawPath();
             if (path == null || path.isBlank() || path.equals("/") || path.contains("%") || path.contains("\\") || path.contains("//") || path.contains("/../") || path.contains("/./"))
                 throw invalid();

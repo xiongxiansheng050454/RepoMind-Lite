@@ -84,6 +84,28 @@ class IndexStoreIntegrationTest {
     }
 
     @Test
+    void deleteRemovesRepositoryJobsChunksAndOutboxAndIgnoresStaleWorker() {
+        var doomed = store.submit(new RepositoryUrlValidator.Remote("https://github.com/acme/doomed.git", "HEAD", "doomed"), Path.of("target/repos"));
+        var kept = store.submit(new RepositoryUrlValidator.Remote("https://github.com/acme/kept.git", "HEAD", "kept"), Path.of("target/repos"));
+        float[] vector = new float[1536];
+        vector[0] = 1;
+        var chunk = new CodeChunk(UUID.randomUUID(), kept.repositoryId(), "Kept.java", "Kept#run", 1, 1, "class Kept { void run() {} }");
+        store.complete(store.claim(kept.jobId()).orElseThrow(), Path.of("target/repos/kept"), "abc", "main", List.of(chunk), List.of(vector), List.of(), 1);
+        var staleClaim = store.claim(doomed.jobId()).orElseThrow();
+
+        store.delete(doomed.repositoryId());
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM repositories WHERE id=?", Integer.class, doomed.repositoryId())).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM index_jobs WHERE repository_id=?", Integer.class, doomed.repositoryId())).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM index_outbox WHERE job_id=?", Integer.class, doomed.jobId())).isZero();
+        assertThat(store.heartbeat(staleClaim)).isFalse();
+        assertThat(store.complete(staleClaim, Path.of("target/repos/doomed"), "x", "main", List.of(), List.of(), List.of(), 0)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM code_chunks WHERE repository_id=?", Integer.class, kept.repositoryId())).isEqualTo(1);
+        assertThatThrownBy(() -> store.delete(doomed.repositoryId()))
+                .isInstanceOf(com.repomind.lite.errors.BusinessException.class);
+    }
+
+    @Test
     void expiredLeaseRecoversAndOutboxDeliversDurableMessage() {
         var submission = store.submit(new RepositoryUrlValidator.Remote("https://github.com/acme/demo.git", "HEAD", "recover-key"), Path.of("target/repos"));
         store.claim(submission.jobId()).orElseThrow();

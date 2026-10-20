@@ -22,7 +22,7 @@ public class IndexStore {
 
     public record IndexStatus(UUID repositoryId, UUID jobId, String status, String stage, double progress,
                               int retryCount, int filesProcessed, int chunksCreated, List<String> warnings,
-                              String error, Instant startedAt, Instant completedAt) {
+                              String error, String errorCode, String failedStage, Instant startedAt, Instant completedAt) {
         @com.fasterxml.jackson.annotation.JsonProperty
         public int warningCount() {
             return warnings.size();
@@ -37,7 +37,7 @@ public class IndexStore {
     public com.repomind.lite.application.IndexStatus statusApplication(UUID id) {
         IndexStatus result = status(id);
         return new com.repomind.lite.application.IndexStatus(result.repositoryId(), result.jobId(), result.status(), result.stage(), result.progress(),
-                result.retryCount(), result.filesProcessed(), result.chunksCreated(), result.warnings(), result.error(), result.startedAt(), result.completedAt());
+                result.retryCount(), result.filesProcessed(), result.chunksCreated(), result.warnings(), result.error(), result.errorCode(), result.failedStage(), result.startedAt(), result.completedAt());
     }
 
     private final JdbcTemplate jdbc;
@@ -71,15 +71,24 @@ public class IndexStore {
         return rows.get(0);
     }
 
+    public void delete(UUID id) {
+        tx.executeWithoutResult(transaction -> {
+            if (jdbc.query("SELECT id FROM repositories WHERE id=? FOR UPDATE", (rs, n) -> rs.getObject(1), id).isEmpty())
+                throw BusinessException.notFound("REPOSITORY_NOT_FOUND", "Repository was not found");
+            jdbc.update("UPDATE repositories SET current_job_id=NULL WHERE id=?", id);
+            jdbc.update("DELETE FROM repositories WHERE id=?", id);
+        });
+    }
+
     public IndexStatus status(UUID id) {
         get(id);
-        return jdbc.queryForObject("SELECT j.*,r.status FROM index_jobs j JOIN repositories r ON r.current_job_id=j.id WHERE r.id=?", (rs, n) -> new IndexStatus(id, rs.getObject("id", UUID.class), rs.getString("status"), rs.getString("stage"), rs.getDouble("progress"), rs.getInt("retry_count"), rs.getInt("files_processed"), rs.getInt("chunks_created"), warnings(rs.getString("warnings")), rs.getString("error"), instant(rs, "started_at"), instant(rs, "completed_at")), id);
+        return jdbc.queryForObject("SELECT j.*,r.status FROM index_jobs j JOIN repositories r ON r.current_job_id=j.id WHERE r.id=?", (rs, n) -> new IndexStatus(id, rs.getObject("id", UUID.class), rs.getString("status"), rs.getString("stage"), rs.getDouble("progress"), rs.getInt("retry_count"), rs.getInt("files_processed"), rs.getInt("chunks_created"), warnings(rs.getString("warnings")), rs.getString("error"), rs.getString("error_code"), rs.getString("failed_stage"), instant(rs, "started_at"), instant(rs, "completed_at")), id);
     }
 
     public Optional<IndexClaim> claim(UUID jobId) {
         return tx.execute(transaction -> {
             UUID token = UUID.randomUUID();
-            var jobs = jdbc.query("UPDATE index_jobs SET stage='CLONING',attempts=attempts+1,retry_count=attempts,lease_token=?,lease_until=now()+interval '90 seconds',started_at=COALESCE(started_at,now()),error=NULL,updated_at=now() WHERE id=? AND stage='QUEUED' AND attempts<4 RETURNING repository_id,attempts", (rs, n) -> new Object[]{rs.getObject(1, UUID.class), rs.getInt(2)}, token, jobId);
+            var jobs = jdbc.query("UPDATE index_jobs SET stage='CLONING',attempts=attempts+1,retry_count=attempts,lease_token=?,lease_until=now()+interval '90 seconds',started_at=COALESCE(started_at,now()),error=NULL,error_code=NULL,failed_stage=NULL,updated_at=now() WHERE id=? AND stage='QUEUED' AND attempts<4 RETURNING repository_id,attempts", (rs, n) -> new Object[]{rs.getObject(1, UUID.class), rs.getInt(2)}, token, jobId);
             if (jobs.isEmpty()) return Optional.empty();
             UUID repositoryId = (UUID) jobs.get(0)[0];
             jdbc.update("UPDATE repositories SET status='INDEXING',updated_at=now() WHERE id=?", repositoryId);
@@ -120,10 +129,14 @@ public class IndexStore {
     }
 
     public void fail(IndexClaim claim, String safeError) {
+        fail(claim, "INDEX_FAILED", null, safeError, true);
+    }
+
+    public void fail(IndexClaim claim, String code, String failedStage, String safeError, boolean retryable) {
         tx.executeWithoutResult(transaction -> {
             if (!owns(claim)) return;
-            boolean terminal = claim.attempt() >= 4;
-            jdbc.update("UPDATE index_jobs SET stage=?,error=?,lease_token=NULL,lease_until=NULL,completed_at=CASE WHEN ? THEN now() ELSE NULL END,updated_at=now() WHERE id=?", terminal ? "FAILED" : "QUEUED", safeError, terminal, claim.jobId());
+            boolean terminal = !retryable || claim.attempt() >= 4;
+            jdbc.update("UPDATE index_jobs SET stage=?,error=?,error_code=?,failed_stage=?,lease_token=NULL,lease_until=NULL,completed_at=CASE WHEN ? THEN now() ELSE NULL END,updated_at=now() WHERE id=?", terminal ? "FAILED" : "QUEUED", safeError, code, failedStage, terminal, claim.jobId());
             jdbc.update("UPDATE repositories SET status=?,updated_at=now() WHERE id=?", terminal ? "FAILED" : "QUEUED", claim.repository().id());
             if (terminal) jdbc.update("DELETE FROM index_outbox WHERE job_id=?", claim.jobId());
             else
@@ -136,7 +149,7 @@ public class IndexStore {
             var expired = jdbc.query("SELECT id,repository_id,attempts FROM index_jobs WHERE lease_until<now() AND stage NOT IN ('QUEUED','READY','FAILED') FOR UPDATE SKIP LOCKED", (rs, n) -> new Object[]{rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getInt(3)});
             for (Object[] row : expired) {
                 boolean terminal = (Integer) row[2] >= 4;
-                jdbc.update("UPDATE index_jobs SET stage=?,lease_token=NULL,lease_until=NULL,error='Indexing interrupted; recovery attempted',completed_at=CASE WHEN ? THEN now() ELSE NULL END,updated_at=now() WHERE id=?", terminal ? "FAILED" : "QUEUED", terminal, row[0]);
+                jdbc.update("UPDATE index_jobs SET stage=?,lease_token=NULL,lease_until=NULL,error='Indexing interrupted; recovery attempted',error_code='INDEX_INTERRUPTED',failed_stage=stage,completed_at=CASE WHEN ? THEN now() ELSE NULL END,updated_at=now() WHERE id=?", terminal ? "FAILED" : "QUEUED", terminal, row[0]);
                 jdbc.update("UPDATE repositories SET status=?,updated_at=now() WHERE id=?", terminal ? "FAILED" : "QUEUED", row[1]);
                 if (terminal) jdbc.update("DELETE FROM index_outbox WHERE job_id=?", row[0]);
             }

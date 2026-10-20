@@ -1,45 +1,43 @@
 package com.repomind.lite.infrastructure;
 
 import com.repomind.lite.errors.BusinessException;
-import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Duration;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 @Component
 public class ChatModelGateway {
-    private final String baseUrl;
-    private final String apiKey;
-    private final String modelName;
-    private final int maxTokens;
+    private final LlmSettings settings;
+    private volatile LlmSettings.Snapshot builtFor;
     private volatile StreamingChatModel model;
 
-    public ChatModelGateway(@Value("${repomind.llm.base-url}") String baseUrl,
-                            @Value("${repomind.llm.api-key}") String apiKey,
-                            @Value("${repomind.llm.model}") String modelName,
-                            @Value("${repomind.llm.max-tokens:1024}") int maxTokens,
-                            MeterRegistry ignored) {
-        this.baseUrl = baseUrl;
-        this.apiKey = apiKey;
-        this.modelName = modelName;
-        this.maxTokens = maxTokens;
+    public ChatModelGateway(LlmSettings settings, MeterRegistry ignored) {
+        this.settings = settings;
+    }
+
+    public boolean configured() {
+        return settings.current().configured();
     }
 
     public StreamingChatModel model() {
-        if (apiKey == null || apiKey.isBlank())
+        LlmSettings.Snapshot snapshot = settings.current();
+        if (!snapshot.configured())
             throw BusinessException.unavailable("LLM_NOT_CONFIGURED", "The language model service is not configured");
-        if (model == null) synchronized (this) {
-            if (model == null) {
+        if (model == null || !snapshot.equals(builtFor)) synchronized (this) {
+            if (model == null || !snapshot.equals(builtFor)) {
                 model = OpenAiStreamingChatModel.builder()
-                        .baseUrl(baseUrl).apiKey(apiKey).modelName(modelName)
-                        .maxTokens(maxTokens).timeout(Duration.ofSeconds(30))
+                        .baseUrl(snapshot.baseUrl()).apiKey(snapshot.apiKey()).modelName(snapshot.model())
+                        .maxTokens(snapshot.maxTokens()).timeout(Duration.ofSeconds(120)).returnThinking(true)
                         .logRequests(false).logResponses(false).build();
+                builtFor = snapshot;
             }
         }
         return model;
     }
 
-    public String modelName() { return modelName; }
+    public String modelName() {
+        return settings.current().model();
+    }
 }

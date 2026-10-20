@@ -1,0 +1,13 @@
+# Development environment configuration
+# Use with: java -Dspring.profiles.active=dev -jar app.jar
+# or set SPRING_PROFILES_ACTIVE=dev
+
+repomind:
+  security:
+    # WARNING: This disables public IP validation
+    # Only use in development when your hosts file blocks GitHub
+    skip-ip-validation: true
+
+logging:
+  level:
+    com.repomind.lite: DEBUG
