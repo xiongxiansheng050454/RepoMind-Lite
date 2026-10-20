@@ -1,6 +1,8 @@
 package com.repomind.lite.infrastructure;
 
 import com.repomind.lite.errors.BusinessException;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.eclipse.jgit.lib.Repository;
 
@@ -23,8 +25,9 @@ public class RepositoryUrlValidator {
     private final Resolver resolver;
     private final boolean skipIpValidation;
 
+    @Autowired
     public RepositoryUrlValidator(DnsResolver dnsResolver,
-                                  @org.springframework.beans.factory.annotation.Value("${repomind.security.skip-ip-validation:false}") boolean skipIpValidation) {
+                                  @Value("${repomind.security.skip-ip-validation:false}") boolean skipIpValidation) {
         this(dnsResolver::resolve, skipIpValidation);
     }
 
