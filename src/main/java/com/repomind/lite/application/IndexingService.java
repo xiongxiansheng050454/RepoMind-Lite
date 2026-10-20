@@ -2,6 +2,7 @@ package com.repomind.lite.application;
 
 import com.repomind.lite.infrastructure.EmbeddingGateway;
 import com.repomind.lite.infrastructure.GitRepositoryService;
+import com.repomind.lite.infrastructure.IndexFailureClassifier;
 import com.repomind.lite.infrastructure.IndexStore;
 import com.repomind.lite.infrastructure.JavaChunkExtractor;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -42,14 +43,20 @@ public class IndexingService {
         var expired = new java.util.concurrent.atomic.AtomicBoolean(false);
         heartbeat.scheduleAtFixedRate(() -> { try { if (!store.heartbeat(claim)) expired.set(true); } catch (Exception ignored) { expired.set(true); } }, 15, 15, TimeUnit.SECONDS);
         Instant deadline = Instant.now().plusSeconds(1200);
+        String stage = "CONFIG";
         try {
+            if (embeddings != null && !embeddings.configured())
+                throw com.repomind.lite.errors.BusinessException.unavailable("LLM_NOT_CONFIGURED", "The language model service is not configured");
+            stage = "CLONING";
             var cloneSample = Timer.start(meters); GitRepositoryService.Checkout checkout;
             try { checkout = git.checkout(claim); } finally { cloneSample.stop(meters.timer("repomind.index.clone.duration")); }
             ensureLease(expired, deadline);
+            stage = "PARSING";
             store.progress(claim, "PARSING", .2, 0, 0, List.of());
             var parseSample = Timer.start(meters); JavaChunkExtractor.Extraction extraction;
             try { extraction = extractor.extract(claim.repository().id(), checkout.path()); } finally { parseSample.stop(meters.timer("repomind.index.parse.duration")); }
             ensureLease(expired, deadline);
+            stage = "EMBEDDING";
             store.progress(claim, "EMBEDDING", .4, extraction.filesProcessed(), extraction.chunks().size(), extraction.warnings());
             var vectors = new ArrayList<float[]>();
             for (int offset = 0; offset < extraction.chunks().size(); offset += 32) {
@@ -61,8 +68,10 @@ public class IndexingService {
             store.complete(claim, checkout.path(), checkout.commitSha(), checkout.defaultBranch(), extraction.chunks(), vectors, extraction.warnings(), extraction.filesProcessed());
         } catch (Exception ex) {
             meters.counter("repomind.index.failures").increment();
-            log.warn("Indexing attempt {} failed for job {} ({})", claim.attempt(), claim.jobId(), ex.getClass().getSimpleName());
-            store.fail(claim, "Repository indexing could not complete; check remote availability and model configuration");
+            var failure = IndexFailureClassifier.classify(ex, stage);
+            log.warn("Indexing attempt {} failed for job {} at {} with {} ({})", claim.attempt(), claim.jobId(), stage,
+                    failure.code(), IndexFailureClassifier.chain(ex));
+            store.fail(claim, failure.code(), stage, failure.message(), failure.retryable());
         } finally {
             heartbeat.shutdownNow(); sample.stop(meters.timer("repomind.index.duration"));
             if (previousContext == null) MDC.clear(); else MDC.setContextMap(previousContext);

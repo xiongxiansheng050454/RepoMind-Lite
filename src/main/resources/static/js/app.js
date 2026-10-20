@@ -5,8 +5,68 @@ const API_BASE = '/api';
 const state = {
     repositories: new Map(),
     currentRepositoryId: null,
-    isStreaming: false
+    isStreaming: false,
+    pollers: new Map()
 };
+
+const TERMINAL = new Set(['READY', 'FAILED']);
+const POLL_INTERVAL_MS = 4000;
+const POLL_LIMIT_MS = 40 * 60 * 1000;
+
+const STAGE_LABELS = {
+    QUEUED: '排队中', CONFIG: '检查配置', CLONING: '克隆仓库', PARSING: '解析代码',
+    EMBEDDING: '生成向量', INDEXING: '索引中', READY: '已就绪', FAILED: '失败'
+};
+
+const ERROR_HINTS = {
+    LLM_NOT_CONFIGURED: '模型尚未配置，请先设置接口地址和 API Key',
+    LLM_AUTH: 'API Key 被模型服务拒绝，请检查 Key 是否正确、是否过期',
+    LLM_MODEL_NOT_FOUND: '模型服务上找不到所配置的模型，请检查模型名称',
+    LLM_INVALID_REQUEST: '模型服务拒绝了请求，请检查模型名称和参数是否被该服务支持',
+    LLM_RATE_LIMITED: '模型服务触发限流，请稍后重试',
+    LLM_TIMEOUT: '模型服务响应超时，请检查网络或稍后重试',
+    LLM_UNREACHABLE: '连不上模型服务，请检查接口地址和网络',
+    LLM_TLS: '与模型服务的 TLS 连接失败，请检查证书或接口地址',
+    LLM_SERVER_ERROR: '模型服务内部错误，请稍后重试',
+    LLM_ERROR: '调用模型服务失败',
+    LLM_SETTINGS_INVALID: '配置不合法',
+    LLM_SETTINGS_KEY_REQUIRED: '修改接口地址后需要重新输入 API Key',
+    EMBEDDING_DIMENSION: '向量模型输出维度不是 1536，请换用 1536 维的向量模型',
+    GIT_DNS_FAILED: '无法解析仓库域名，请检查网络、DNS 或加速器',
+    GIT_UNREACHABLE: '连不上仓库所在主机，请检查网络或加速器',
+    GIT_HOST_PRIVATE_IP: '仓库域名解析到了非公网地址（若是加速器所致，请开启 SKIP_IP_VALIDATION）',
+    GIT_TLS: '与仓库主机的 TLS 握手失败，Java 可能不信任加速器的证书',
+    GIT_REPO_NOT_FOUND: '仓库不存在或不是公开仓库',
+    GIT_REF_NOT_FOUND: '找不到指定的分支、标签或 Commit',
+    GIT_REDIRECT: '仓库主机返回了重定向，当前不允许',
+    GIT_TOO_LARGE: '仓库超过大小或文件数量限制',
+    GIT_CLONE_FAILED: '克隆仓库失败',
+    PARSE_FAILED: '解析仓库代码失败',
+    INDEX_TIMEOUT: '索引耗时过长或任务租约过期',
+    INDEX_INTERRUPTED: '索引被中断，系统已尝试恢复',
+    INDEX_FAILED: '索引失败',
+    REPOSITORY_NOT_FOUND: '后端已没有这条仓库记录，请重新提交',
+    INVALID_REQUEST: '请求参数不合法'
+};
+
+async function readApiError(response, fallback) {
+    let body = null;
+    try { body = await response.json(); } catch (e) { /* non-JSON body */ }
+    const error = new Error((body && body.message) || fallback);
+    error.code = body && body.code;
+    return error;
+}
+
+function describeFailure(code, message) {
+    const hint = ERROR_HINTS[code];
+    if (!hint) return { text: message || '未知错误', detail: '' };
+    const detail = message && message !== hint && /[一-龥]/.test(message) === false ? message : '';
+    return { text: hint, detail };
+}
+
+function isLlmCode(code) {
+    return typeof code === 'string' && (code.startsWith('LLM_') || code === 'EMBEDDING_DIMENSION');
+}
 
 // DOM Elements
 const elements = {
@@ -32,6 +92,7 @@ const elements = {
 function init() {
     setupEventListeners();
     loadRepositories();
+    state.repositories.forEach((repo, id) => pollRepositoryStatus(id));
 }
 
 // Event Listeners
@@ -40,6 +101,7 @@ function setupEventListeners() {
     elements.chatForm.addEventListener('submit', handleSendMessage);
     elements.backBtn.addEventListener('click', handleBackToList);
     elements.chatInput.addEventListener('input', handleChatInputChange);
+    elements.repositoryList.addEventListener('click', handleRepositoryListClick);
 
     // Auto-resize textarea
     elements.chatInput.addEventListener('input', function() {
@@ -80,103 +142,117 @@ async function handleSubmitRepository(e) {
     const ref = elements.refInput.value.trim() || null;
 
     setButtonLoading(elements.submitBtn, true);
+    try {
+        if (await submitRepository(repoUrl, ref)) elements.submitForm.reset();
+    } finally {
+        setButtonLoading(elements.submitBtn, false);
+    }
+}
 
+async function submitRepository(repoUrl, ref) {
     try {
         const response = await fetch(`${API_BASE}/repositories`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ repoUrl, ref })
         });
-
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.message || '提交失败');
-        }
+        if (!response.ok) throw await readApiError(response, '提交失败');
 
         const data = await response.json();
-
-        // Add to state
         state.repositories.set(data.repositoryId, {
             repositoryId: data.repositoryId,
             jobId: data.jobId,
             repoUrl: repoUrl,
             ref: ref || 'HEAD',
             status: data.status,
+            error: null,
+            errorCode: null,
+            failedStage: null,
             submittedAt: new Date().toISOString()
         });
-
         saveRepositories();
         renderRepositoryList();
-
-        // Clear form
-        elements.submitForm.reset();
-
         showToast('success', '提交成功', '仓库已开始索引');
-
-        // Start polling status
         pollRepositoryStatus(data.repositoryId);
-
+        return true;
     } catch (error) {
-        showToast('error', '提交失败', error.message);
-    } finally {
-        setButtonLoading(elements.submitBtn, false);
+        showToast('error', '提交失败', describeFailure(error.code, error.message).text);
+        if (error.code === 'LLM_NOT_CONFIGURED' && typeof openSettings === 'function') openSettings();
+        return false;
     }
 }
 
 // Poll Repository Status
-async function pollRepositoryStatus(repositoryId) {
-    const maxAttempts = 60; // 5 minutes
-    let attempts = 0;
+function pollRepositoryStatus(repositoryId) {
+    if (state.pollers.has(repositoryId)) return;
+    state.pollers.set(repositoryId, true);
+    const startedAt = Date.now();
+    const finish = () => state.pollers.delete(repositoryId);
 
     const poll = async () => {
+        const repo = state.repositories.get(repositoryId);
+        if (!repo) return finish();
+        const wasActive = !TERMINAL.has(repo.status);
+        let delay = POLL_INTERVAL_MS;
         try {
             const response = await fetch(`${API_BASE}/repositories/${repositoryId}/index-status`);
-
-            if (!response.ok) {
-                throw new Error('获取状态失败');
+            if (response.status === 404) {
+                Object.assign(repo, { status: 'FAILED', errorCode: 'REPOSITORY_NOT_FOUND', error: null, failedStage: null });
+                persistAndRender();
+                return finish();
             }
-
-            const data = await response.json();
-
-            // Update state
-            const repo = state.repositories.get(repositoryId);
-            if (repo) {
-                Object.assign(repo, {
-                    status: data.status,
-                    phase: data.phase,
-                    progress: data.progress,
-                    fileCount: data.fileCount,
-                    chunkCount: data.chunkCount
-                });
-                saveRepositories();
-
-                // Update UI if list is visible
-                if (!elements.repositoriesSection.style.display ||
-                    elements.repositoriesSection.style.display !== 'none') {
-                    renderRepositoryList();
-                }
+            if (!response.ok) throw await readApiError(response, '获取状态失败');
+            applyStatus(repo, await response.json());
+            persistAndRender();
+            if (TERMINAL.has(repo.status)) {
+                finish();
+                if (wasActive) notifyFinished(repo);
+                return;
             }
-
-            // Continue polling if not terminal state
-            if (data.status !== 'READY' && data.status !== 'FAILED' && attempts < maxAttempts) {
-                attempts++;
-                setTimeout(poll, 5000);
-            } else if (data.status === 'READY') {
-                showToast('success', '索引完成', `仓库 ${repo.repoUrl} 已就绪`);
-            } else if (data.status === 'FAILED') {
-                showToast('error', '索引失败', data.error || '请重试');
-            }
-
         } catch (error) {
             console.error('Status poll error:', error);
-            if (attempts < maxAttempts) {
-                attempts++;
-                setTimeout(poll, 5000);
-            }
+            delay = 8000;
         }
+        if (Date.now() - startedAt > POLL_LIMIT_MS) {
+            finish();
+            showToast('error', '状态更新已停止', '长时间没有结果，请刷新页面或重新提交');
+            return;
+        }
+        setTimeout(poll, delay);
     };
 
     poll();
+}
+
+function applyStatus(repo, data) {
+    Object.assign(repo, {
+        status: data.status,
+        stage: data.stage,
+        progress: data.progress,
+        fileCount: data.filesProcessed,
+        chunkCount: data.chunksCreated,
+        error: data.error || null,
+        errorCode: data.errorCode || null,
+        failedStage: data.failedStage || null
+    });
+}
+
+function persistAndRender() {
+    saveRepositories();
+    if (elements.chatSection.style.display === 'none') renderRepositoryList();
+}
+
+function notifyFinished(repo) {
+    if (repo.status === 'READY') {
+        showToast('success', '索引完成', `${repo.repoUrl} 已就绪，可以开始问答`);
+        return;
+    }
+    showToast('error', '索引失败', describeFailure(repo.errorCode, repo.error).text);
+}
+
+function statusLabel(repo) {
+    if (repo.status === 'INDEXING') return STAGE_LABELS[repo.stage] || STAGE_LABELS.INDEXING;
+    return STAGE_LABELS[repo.status] || repo.status;
 }
 
 // Render Repository List
@@ -191,38 +267,107 @@ function renderRepositoryList() {
     const repos = Array.from(state.repositories.values())
         .sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
 
-    elements.repositoryList.innerHTML = repos.map(repo => `
-        <div class="repository-card" data-id="${repo.repositoryId}"
-             onclick="handleRepositoryClick('${repo.repositoryId}')">
+    elements.repositoryList.innerHTML = repos.map(repositoryCardHtml).join('');
+}
+
+function repositoryCardHtml(repo) {
+    const status = String(repo.status || '').toLowerCase();
+    const failed = repo.status === 'FAILED';
+    const active = !TERMINAL.has(repo.status);
+    const progress = progressPercent(repo);
+    const mark = repo.status === 'READY' ? '✓ ' : failed ? '✕ ' : '';
+
+    let failure = '';
+    if (failed) {
+        const info = describeFailure(repo.errorCode, repo.error);
+        const stage = repo.failedStage ? (STAGE_LABELS[repo.failedStage] || repo.failedStage) : '';
+        failure = `
+            <div class="repository-error">
+                ${stage ? `<strong>${escapeHtml(stage)}阶段失败：</strong>` : ''}${escapeHtml(info.text)}
+                ${info.detail ? `<div class="detail">${escapeHtml(info.detail)}</div>` : ''}
+            </div>`;
+    }
+
+    const actions = `
+            <div class="repository-actions">
+                ${failed ? '<button type="button" class="btn-small" data-action="retry">重试</button>' : ''}
+                ${failed && isLlmCode(repo.errorCode) ? '<button type="button" class="btn-small" data-action="settings">配置模型</button>' : ''}
+                <button type="button" class="btn-small btn-danger" data-action="delete">删除</button>
+            </div>`;
+
+    return `
+        <div class="repository-card ${failed ? 'failed' : ''}" data-id="${escapeAttr(repo.repositoryId)}">
             <div class="repository-card-header">
                 <div class="repository-url">${escapeHtml(repo.repoUrl)}</div>
-                <div class="repository-status status-${repo.status.toLowerCase()}">
-                    ${repo.status === 'READY' ? '✓' : ''} ${repo.status}
-                </div>
+                <div class="repository-status status-${escapeAttr(status)}">${mark}${escapeHtml(statusLabel(repo))}</div>
             </div>
             <div class="repository-meta">
-                <span>📌 ${repo.ref || 'HEAD'}</span>
-                ${repo.fileCount ? `<span>📄 ${repo.fileCount} 文件</span>` : ''}
-                ${repo.chunkCount ? `<span>🔍 ${repo.chunkCount} 片段</span>` : ''}
+                <span>📌 ${escapeHtml(repo.ref || 'HEAD')}</span>
+                ${repo.fileCount ? `<span>📄 ${Number(repo.fileCount)} 文件</span>` : ''}
+                ${repo.chunkCount ? `<span>🔍 ${Number(repo.chunkCount)} 片段</span>` : ''}
                 <span>⏱ ${formatDate(repo.submittedAt)}</span>
             </div>
-        </div>
-    `).join('');
+            ${active ? `<div class="progress-bar"><div style="width:${progress}%"></div></div>` : ''}
+            ${failure}
+            ${actions}
+        </div>`;
 }
 
 // Handle Repository Click
-window.handleRepositoryClick = function(repositoryId) {
-    const repo = state.repositories.get(repositoryId);
+function handleRepositoryListClick(event) {
+    const card = event.target.closest('.repository-card');
+    if (!card) return;
+    const repo = state.repositories.get(card.dataset.id);
     if (!repo) return;
 
-    if (repo.status !== 'READY') {
-        showToast('info', '索引进行中', '请等待索引完成后再开始问答');
+    const action = event.target.closest('[data-action]')?.dataset.action;
+    if (action === 'retry') {
+        submitRepository(repo.repoUrl, repo.ref === 'HEAD' ? null : repo.ref);
+    } else if (action === 'settings') {
+        openSettings();
+    } else if (action === 'delete') {
+        deleteRepository(repo);
+    } else {
+        openRepository(repo);
+    }
+}
+
+async function deleteRepository(repo) {
+    const active = !TERMINAL.has(repo.status);
+    const warning = active ? '\n\n该仓库正在索引，删除会中止索引。' : '';
+    if (!window.confirm(`确定删除这个仓库吗？\n${repo.repoUrl}\n\n索引数据和本地代码副本都会被删除，且无法恢复。${warning}`)) return;
+
+    try {
+        const response = await fetch(`${API_BASE}/repositories/${encodeURIComponent(repo.repositoryId)}`, { method: 'DELETE' });
+        if (!response.ok && response.status !== 404) throw await readApiError(response, '删除失败');
+        state.repositories.delete(repo.repositoryId);
+        saveRepositories();
+        renderRepositoryList();
+        showToast('success', '已删除', repo.repoUrl);
+    } catch (error) {
+        showToast('error', '删除失败', describeFailure(error.code, error.message).text);
+    }
+}
+
+function openRepository(repo) {
+    if (repo.status === 'READY') {
+        state.currentRepositoryId = repo.repositoryId;
+        showChatSection(repo);
         return;
     }
+    if (repo.status === 'FAILED') {
+        const info = describeFailure(repo.errorCode, repo.error);
+        showToast('error', '索引失败，无法问答', info.text);
+        if (isLlmCode(repo.errorCode) && typeof openSettings === 'function') openSettings();
+        return;
+    }
+    const progress = progressPercent(repo);
+    showToast('info', '索引进行中', `${statusLabel(repo)}${progress ? `（${progress}%）` : ''}，请等待完成后再问答`);
+}
 
-    state.currentRepositoryId = repositoryId;
-    showChatSection(repo);
-};
+function progressPercent(repo) {
+    return Math.max(0, Math.min(100, Math.round((Number(repo.progress) || 0) * 100)));
+}
 
 // Show Chat Section
 function showChatSection(repo) {
@@ -240,8 +385,8 @@ function showChatSection(repo) {
 function handleBackToList() {
     elements.chatSection.style.display = 'none';
     elements.submitSection.style.display = 'block';
-    elements.repositoriesSection.style.display = state.repositories.size > 0 ? 'block' : 'none';
     state.currentRepositoryId = null;
+    renderRepositoryList();
 }
 
 // Handle Send Message
@@ -267,41 +412,62 @@ async function handleSendMessage(e) {
     elements.sendBtn.disabled = true;
 
     // Create assistant message container
-    const messageId = Date.now();
-    addMessage('assistant', '', messageId, true);
+    const view = createAssistantView(addMessage('assistant', ''));
 
     try {
-        await streamChat(state.currentRepositoryId, question, messageId);
+        await streamChat(state.currentRepositoryId, question, view);
     } catch (error) {
-        updateMessage(messageId, `错误: ${error.message}`);
-        showToast('error', '问答失败', error.message);
+        const info = describeFailure(error.code, error.message);
+        view.fail(info.text);
+        showToast('error', '问答失败', info.text);
+        if (isLlmCode(error.code) && typeof openSettings === 'function') openSettings();
     } finally {
         state.isStreaming = false;
         elements.chatInput.disabled = false;
         elements.sendBtn.disabled = false;
-        removeLoadingIndicator(messageId);
         elements.chatInput.focus();
     }
 }
 
 // Stream Chat with SSE
-async function streamChat(repositoryId, question, messageId) {
+async function streamChat(repositoryId, question, view) {
     const response = await fetch(`${API_BASE}/repositories/${repositoryId}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question })
     });
 
-    if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || '请求失败');
-    }
+    if (!response.ok) throw await readApiError(response, '请求失败');
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = '';
-    let content = '';
     const citations = [];
+    let buffer = '';
+    let eventName = 'message';
+    let streamError = null;
+    let finished = false;
+
+    const handlers = {
+        status: payload => view.status(payload.detail),
+        thinking: payload => view.thinking(payload.text || ''),
+        tool_start: payload => view.toolStart(payload),
+        tool_end: payload => view.toolEnd(payload),
+        token: payload => view.token(payload.text || ''),
+        citation: payload => citations.push(payload),
+        done: payload => { view.citations(citations); view.finish(payload); finished = true; },
+        error: payload => { streamError = Object.assign(new Error(payload.message || '处理出错'), { code: payload.code }); }
+    };
+
+    const handleEvent = (name, data) => {
+        let payload;
+        try {
+            payload = JSON.parse(data);
+        } catch (e) {
+            console.error('Parse SSE error:', e, data);
+            return;
+        }
+        if (handlers[name]) handlers[name](payload);
+    };
 
     while (true) {
         const { done, value } = await reader.read();
@@ -311,98 +477,42 @@ async function streamChat(repositoryId, question, messageId) {
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
-        for (const line of lines) {
-            if (!line.trim() || !line.startsWith('data:')) continue;
-
-            const data = line.substring(5).trim();
-            if (!data) continue;
-
-            try {
-                const event = JSON.parse(data);
-
-                if (event.type === 'token') {
-                    content += event.content;
-                    updateMessage(messageId, content, citations);
-                } else if (event.type === 'citation') {
-                    citations.push(event);
-                    updateMessage(messageId, content, citations);
-                } else if (event.type === 'done') {
-                    console.log('Chat completed:', event);
-                } else if (event.type === 'error') {
-                    throw new Error(event.message || '处理出错');
-                }
-            } catch (e) {
-                console.error('Parse SSE error:', e, data);
+        for (const rawLine of lines) {
+            const line = rawLine.replace(/\r$/, '');
+            if (!line) {
+                eventName = 'message';
+            } else if (line.startsWith('event:')) {
+                eventName = line.substring(6).trim();
+            } else if (line.startsWith('data:')) {
+                const data = line.substring(5).trim();
+                if (data) handleEvent(eventName, data);
             }
         }
     }
 
-    if (!content) {
-        updateMessage(messageId, '未收到回答');
-    }
+    if (streamError) throw streamError;
+    if (!finished) { view.citations(citations); view.finish(null); }
 }
 
 // Add Message to Chat
-function addMessage(role, content, id = null, loading = false) {
-    const messageId = id || Date.now();
+let messageSequence = 0;
+
+function addMessage(role, content) {
     const messageEl = document.createElement('div');
     messageEl.className = `message ${role}`;
-    messageEl.dataset.id = messageId;
+    messageEl.dataset.id = `m${++messageSequence}`;
 
     messageEl.innerHTML = `
         <div class="message-header">
             <span class="message-role ${role}">${role === 'user' ? '你' : 'RepoMind'}</span>
         </div>
-        <div class="message-content" data-content>
-            ${escapeHtml(content)}
-            ${loading ? '<div class="message-loading"><div class="loading-dots"><div class="loading-dot"></div><div class="loading-dot"></div><div class="loading-dot"></div></div></div>' : ''}
-        </div>
+        <div class="message-content" data-content>${escapeHtml(content)}</div>
     `;
 
     elements.chatMessages.appendChild(messageEl);
     elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
 
-    return messageId;
-}
-
-// Update Message Content
-function updateMessage(messageId, content, citations = []) {
-    const messageEl = elements.chatMessages.querySelector(`[data-id="${messageId}"]`);
-    if (!messageEl) return;
-
-    const contentEl = messageEl.querySelector('[data-content]');
-
-    let html = escapeHtml(content).replace(/\n/g, '<br>');
-
-    if (citations.length > 0) {
-        html += `
-            <div class="citations">
-                <div class="citations-title">📎 代码引用</div>
-                <div class="citation-list">
-                    ${citations.map(c => `
-                        <div class="citation-item">
-                            <div class="citation-path">${escapeHtml(c.path)} [L${c.startLine}-L${c.endLine}]</div>
-                            ${c.description ? `<div class="citation-desc">${escapeHtml(c.description)}</div>` : ''}
-                        </div>
-                    `).join('')}
-                </div>
-            </div>
-        `;
-    }
-
-    contentEl.innerHTML = html;
-    elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
-}
-
-// Remove Loading Indicator
-function removeLoadingIndicator(messageId) {
-    const messageEl = elements.chatMessages.querySelector(`[data-id="${messageId}"]`);
-    if (!messageEl) return;
-
-    const loadingEl = messageEl.querySelector('.message-loading');
-    if (loadingEl) {
-        loadingEl.remove();
-    }
+    return messageEl;
 }
 
 // Handle Chat Input Change
@@ -444,14 +554,18 @@ function showToast(type, title, message) {
     setTimeout(() => {
         toast.style.animation = 'slideIn 0.3s ease-out reverse';
         setTimeout(() => toast.remove(), 300);
-    }, 5000);
+    }, type === 'error' ? 9000 : 5000);
 }
 
 // Utility: Escape HTML
 function escapeHtml(text) {
     const div = document.createElement('div');
-    div.textContent = text;
+    div.textContent = text == null ? '' : String(text);
     return div.innerHTML;
+}
+
+function escapeAttr(text) {
+    return escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // Utility: Format Date

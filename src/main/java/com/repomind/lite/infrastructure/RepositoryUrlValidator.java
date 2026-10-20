@@ -40,6 +40,10 @@ public class RepositoryUrlValidator {
         this.skipIpValidation = skipIpValidation;
     }
 
+    public boolean skipsIpValidation() {
+        return skipIpValidation;
+    }
+
     public Remote validate(String value, String requestedRef) {
         try {
             if (value == null || value.length() > 2048) throw invalid();
@@ -54,13 +58,17 @@ public class RepositoryUrlValidator {
             try {
                 addresses = resolver.resolve(host);
             } catch (UnknownHostException ex) {
-                throw BusinessException.badRequest("Unable to resolve hostname: " + host + ". Please check your network connection or DNS settings.");
+                throw new BusinessException(com.repomind.lite.errors.FailureType.BAD_REQUEST, "GIT_DNS_FAILED",
+                        "Unable to resolve hostname: " + host + ". Please check your network connection or DNS settings.");
             }
-            if (addresses.length == 0) throw BusinessException.badRequest("No IP addresses found for hostname: " + host);
+            if (addresses.length == 0)
+                throw new BusinessException(com.repomind.lite.errors.FailureType.BAD_REQUEST, "GIT_DNS_FAILED",
+                        "No IP addresses found for hostname: " + host);
             if (!skipIpValidation) {
                 for (InetAddress address : addresses) {
                     if (!isPublic(address)) {
-                        throw BusinessException.badRequest("Repository host resolves to a non-public IP address: " + address.getHostAddress() +
+                        throw new BusinessException(com.repomind.lite.errors.FailureType.BAD_REQUEST, "GIT_HOST_PRIVATE_IP",
+                            "Repository host resolves to a non-public IP address: " + address.getHostAddress() +
                             ". This is likely due to your hosts file or DNS configuration. " +
                             "To bypass this check for development, set repomind.security.skip-ip-validation=true");
                     }

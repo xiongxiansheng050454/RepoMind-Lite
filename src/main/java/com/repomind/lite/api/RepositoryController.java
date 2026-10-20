@@ -26,6 +26,12 @@ public class RepositoryController {
                 repositories.submit(request.repoUrl(), request.ref())));
     }
 
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> delete(@PathVariable UUID id) {
+        repositories.delete(id);
+        return ResponseEntity.noContent().build();
+    }
+
     @GetMapping("/{id}/index-status")
     public RepositoryResponses.IndexStatusResponse status(@PathVariable UUID id) {
         return RepositoryResponses.IndexStatusResponse.from(repositories.indexStatus(id));

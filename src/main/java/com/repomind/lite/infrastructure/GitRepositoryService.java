@@ -20,14 +20,57 @@ public class GitRepositoryService {
     public record Checkout(Path path, String commitSha, String defaultBranch) {
     }
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(GitRepositoryService.class);
+
     private final RepositoryUrlValidator validator;
+    private final InetSocketAddress proxy;
+
+    // Only reports whether proxy settings exist and their host:port; credentials are never logged.
+    private static String networkEnvironment() {
+        return "java=" + System.getProperty("java.version") + " preferIPv4=" + System.getProperty("java.net.preferIPv4Stack", "unset")
+                + " jvmProxy=" + System.getProperty("https.proxyHost", "unset") + " envHttpsProxy=" + redactProxy(System.getenv("HTTPS_PROXY"))
+                + " (the app does not use HTTPS_PROXY; set GIT_PROXY to route clones through a proxy)";
+    }
+
+    private static String redactProxy(String value) {
+        if (value == null || value.isBlank()) return "unset";
+        try {
+            URI uri = new URI(value.contains("://") ? value : "http://" + value);
+            return uri.getHost() == null ? "set" : uri.getHost() + ":" + uri.getPort();
+        } catch (URISyntaxException ex) {
+            return "set";
+        }
+    }
 
     public GitRepositoryService(RepositoryUrlValidator validator) {
+        this(validator, "");
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public GitRepositoryService(RepositoryUrlValidator validator, @org.springframework.beans.factory.annotation.Value("${repomind.git.proxy:}") String proxy) {
         this.validator = validator;
+        this.proxy = parseProxy(proxy);
+    }
+
+    static InetSocketAddress parseProxy(String value) {
+        if (value == null || value.isBlank()) return null;
+        String text = value.strip();
+        if (!text.contains("://")) text = "http://" + text;
+        URI uri;
+        try {
+            uri = new URI(text);
+        } catch (URISyntaxException ex) {
+            throw new IllegalArgumentException("repomind.git.proxy must look like host:port or http://host:port");
+        }
+        if (!"http".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null || uri.getPort() < 1 || uri.getUserInfo() != null)
+            throw new IllegalArgumentException("repomind.git.proxy must be an http proxy such as http://127.0.0.1:7897");
+        return InetSocketAddress.createUnresolved(uri.getHost(), uri.getPort());
     }
 
     public Checkout checkout(IndexClaim claim) throws Exception {
         var remote = validator.validate(claim.repository().repoUrl(), claim.repository().ref());
+        log.info("Git checkout starting url={} ref={} route={} skipIpValidation={} {}", remote.url(), remote.ref(),
+                proxy == null ? "direct" : "proxy " + proxy.getHostString() + ":" + proxy.getPort(), validator.skipsIpValidation(), networkEnvironment());
         Path parent = claim.repository().workDir();
         // Each lease has an isolated directory so a recovered worker cannot mutate a newer checkout.
         Path path = parent.resolve(claim.jobId() + "-" + claim.token()).toAbsolutePath().normalize();
@@ -65,12 +108,12 @@ public class GitRepositoryService {
             http.setHttpConnectionFactory(new HttpConnectionFactory() {
                 @Override
                 public HttpConnection create(URL url) throws IOException {
-                    return new PinnedHttpsConnection(url);
+                    return new PinnedHttpsConnection(url, validator.skipsIpValidation(), proxy);
                 }
 
                 @Override
-                public HttpConnection create(URL url, Proxy proxy) throws IOException {
-                    return new PinnedHttpsConnection(url);
+                public HttpConnection create(URL url, Proxy ignoredJdkProxy) throws IOException {
+                    return new PinnedHttpsConnection(url, validator.skipsIpValidation(), proxy);
                 }
             });
             transport.setCredentialsProvider(new CredentialsProvider() {

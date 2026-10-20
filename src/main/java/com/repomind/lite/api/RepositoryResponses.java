@@ -17,11 +17,13 @@ public final class RepositoryResponses {
 
     public record IndexStatusResponse(UUID repositoryId, UUID jobId, String status, String stage, double progress,
                                       int retryCount, int filesProcessed, int chunksCreated, List<String> warnings,
-                                      int warningCount, String error, Instant startedAt, Instant completedAt) {
+                                      int warningCount, String error, String errorCode, String failedStage,
+                                      Instant startedAt, Instant completedAt) {
         public static IndexStatusResponse from(IndexStatus value) {
             return new IndexStatusResponse(value.repositoryId(), value.jobId(), value.status(), value.stage(),
                     value.progress(), value.retryCount(), value.filesProcessed(), value.chunksCreated(),
-                    value.warnings(), value.warningCount(), value.error(), value.startedAt(), value.completedAt());
+                    value.warnings(), value.warningCount(), value.error(), value.errorCode(), value.failedStage(),
+                    value.startedAt(), value.completedAt());
         }
     }
 }

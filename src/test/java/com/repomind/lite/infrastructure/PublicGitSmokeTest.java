@@ -27,7 +27,7 @@ class PublicGitSmokeTest {
                 "https://github.com/spring-guides/gs-rest-service.git", "HEAD", "QUEUED",
                 directory.resolve("checkout"), null, null);
         var claim = new IndexClaim(UUID.randomUUID(), UUID.randomUUID(), repository, 1);
-        var git = new GitRepositoryService(new RepositoryUrlValidator());
+        var git = new GitRepositoryService(new RepositoryUrlValidator(), System.getProperty("repomind.git.proxy", ""));
         var checkout = git.checkout(claim);
         assertThat(checkout.commitSha()).matches("[a-f0-9]{40}");
         assertThat(checkout.defaultBranch()).isNotBlank();

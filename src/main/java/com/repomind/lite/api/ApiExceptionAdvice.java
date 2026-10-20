@@ -5,7 +5,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import com.repomind.lite.errors.BusinessException;
 import com.repomind.lite.errors.FailureType;
@@ -25,6 +27,16 @@ public class ApiExceptionAdvice {
     @ExceptionHandler({MethodArgumentNotValidException.class, MethodArgumentTypeMismatchException.class, HttpMessageNotReadableException.class, IllegalArgumentException.class})
     ResponseEntity<ErrorResponse> invalid(Exception ex) {
         return ResponseEntity.badRequest().body(new ErrorResponse("INVALID_REQUEST", "Request parameters are invalid"));
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    ResponseEntity<Void> missingResource() {
+        return ResponseEntity.notFound().build();
+    }
+
+    @ExceptionHandler(AsyncRequestTimeoutException.class)
+    ResponseEntity<Void> asyncTimeout() {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
     }
 
     @ExceptionHandler(Exception.class)
