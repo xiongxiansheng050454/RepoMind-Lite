@@ -7,7 +7,7 @@ import java.net.InetAddress;
 import static org.assertj.core.api.Assertions.*;
 
 class RepositoryUrlValidatorTest {
-    private final RepositoryUrlValidator validator = new RepositoryUrlValidator(host -> new InetAddress[]{InetAddress.getByName("8.8.8.8")});
+    private final RepositoryUrlValidator validator = new RepositoryUrlValidator(host -> new InetAddress[]{InetAddress.getByName("8.8.8.8")}, false);
 
     @Test
     void canonicalizesStableRemoteAndDefaultRef() {
@@ -26,14 +26,14 @@ class RepositoryUrlValidatorTest {
 
     @Test
     void rejectsEveryPrivateDnsAnswer() {
-        var privateDns = new RepositoryUrlValidator(host -> new InetAddress[]{InetAddress.getByName("8.8.8.8"), InetAddress.getByName("10.0.0.1")});
+        var privateDns = new RepositoryUrlValidator(host -> new InetAddress[]{InetAddress.getByName("8.8.8.8"), InetAddress.getByName("10.0.0.1")}, false);
         assertThatThrownBy(() -> privateDns.validate("https://github.com/acme/demo", null)).isInstanceOf(RuntimeException.class);
     }
 
     @Test
     void rejectsMappedIpv6AndMetadataAddresses() {
         for (String ip : new String[]{"127.0.0.1", "169.254.169.254", "192.168.1.2", "::1", "fc00::1", "fe80::1", "100.64.0.1", "0.0.0.0"}) {
-            var privateDns = new RepositoryUrlValidator(host -> new InetAddress[]{InetAddress.getByName(ip)});
+            var privateDns = new RepositoryUrlValidator(host -> new InetAddress[]{InetAddress.getByName(ip)}, false);
             assertThatThrownBy(() -> privateDns.validate("https://example.com/repo", null)).isInstanceOf(RuntimeException.class);
         }
     }
